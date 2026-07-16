@@ -64,6 +64,10 @@ class AIResearchAssistant:
             collection_name='research_docs'
         )
 
+        #5. Session store
+        self.session_store : Dict[str,InMemoryChatMessageHistory] = {}
+
+
         print("Research Assistent initialized")
         print(f"Vector store : {persist_directory}")
         print(f"Document indexed : {self.vectorstore._collection.count()}")
@@ -137,7 +141,13 @@ class AIResearchAssistant:
             source = doc.metadata.get('source','unknown')
             formatted.append(f'for chunk {i} and source [{source}]\n content is {doc.page_content}')
         return '\n\n--\n\n'.join(formatted)
-    
+
+    def get_session_history(self,session_id: str)->BaseChatMessageHistory:
+        """Get or create session history"""
+        if session_id not in self.session_store:
+            self.session_store[session_id] = InMemoryChatMessageHistory()
+        return self.session_store[session_id]
+
     def ask(
             self,
             question: str,
@@ -146,15 +156,23 @@ class AIResearchAssistant:
         retriever = self._build_retriever()
         docs = retriever.invoke(question)
         context = self.format_docs_for_context(docs)
+        history = self.get_session_history('session_id')
         prompt = ChatPromptTemplate.from_messages(
     [
         (
             "system",
-            """You are an AI Research Assistant. Analyze the provided documents
-            and return a structured response.
-            ...
-            """
+                    """You are an AI Research Assistant. Analyze the provided documents 
+    and return a structured response.
+
+    Rules:
+    1. ONLY use information from the provided context
+    2. If the context doesn't have the answer, say so in the answer field
+    3. Cite which sources are used.
+    4. Rate your confidence High,Med or Low
+    Use conversation history to understand follow-up questions.
+    """
         ),
+        MessagesPlaceholder(variable_name='history'),
         (
             "human",
             """Context documents:
@@ -172,14 +190,33 @@ Question: {question}"""
             {
             'context':context,
             'question':question,
-            'sources': self.list_sources()
+            'sources': self.list_sources(),
+            'history':history.messages[-10:]
             }
         )
+    #Save to memory
+        history.add_message(HumanMessage(content=question))
+        history.add_message(AIMessage(content=response))
         return response
     
-    
-    
+    def clear_session(self, session_id: str):
+        if session_id in self.session_store:
+            self.session_store[session_id].clear()
+            print(f"Cleared session: {session_id}")
 
+    def get_session_messages(self, session_id: str) -> list:
+        """Get conversation history as readable dicts."""
+        if session_id not in self.session_store:
+            return []
+        return [
+            {
+                "role": "human" if isinstance(m, HumanMessage) else "assistant",
+                "content": m.content,
+            }
+            for m in self.session_store[session_id].messages
+        ]
+    
+    
 
 if __name__ == "__main__":
     import shutil
